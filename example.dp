@@ -1,0 +1,8 @@
+<!DOCTYPE html>
+<html lang="en">
+<body>
+<p> {% 'Hi ' + user['username'] if user['authenticated'] else "Please authenticate so we'll know your name" %} </p>
+{% "<p>We know that your name is {username}</p>".format(username=user['username']) if user['authenticated'] else '' %}
+</body>
+</html>
+
