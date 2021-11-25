@@ -1,37 +1,28 @@
 import asyncio
 from aiohttp import web
+import config
+import os
+import json
+import handler
 
 
-async def handler(request):
-    text = '''
-            <!DOCTYPE html>
-        <html>
-            <head>
-                <title> Document Title </title>
-            </head>
+def load_json_mime():
+    current_dir = os.getcwd()
+    json_path = os.path.join(current_dir, 'mime.json')
+    with open(json_path) as json_file:
+        dict = json.load(json_file)
+    return dict
 
-            <body> 
-                <h1> An header </h1>
-                <p> The paragraph goes here </p>
-                <ul>
-                    <li> First item in a list </li>
-                    <li> Another item </li>
-                </ul>
-            </body>
-        </html>
-    '''
-    return web.Response(body=text.encode('utf-8'), status=200,
-                        headers={"Content-Type": "text/html", "charset": "utf-8"})
+mimeDict = load_json_mime()
 
 
 async def main():
-    server = web.Server(handler)
+    server = web.Server(handler.handler)
     runner = web.ServerRunner(server)
     await runner.setup()
-    site = web.TCPSite(runner, 'localhost', 8888)
+    site = web.TCPSite(runner, 'localhost', config.port, shutdown_timeout=config.timeout)
     await site.start()
-
-    print("======= Serving on http://127.0.0.1:8888/ ======")
+    print("======= Serving on http://127.0.0.1:8001/ ======")
 
 
 if __name__ == "__main__":
