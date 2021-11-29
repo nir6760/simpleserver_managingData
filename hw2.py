@@ -22,7 +22,8 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, 'localhost', config.port, shutdown_timeout=config.timeout)
     await site.start()
-    print("======= Serving on http://127.0.0.1:8001/ ======")
+
+    print(f"======= Serving on {site.name} ======")
 
 
 if __name__ == "__main__":
