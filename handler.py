@@ -1,25 +1,20 @@
-from urllib.parse import unquote
-from aiohttp import web
+from exception_types import PostBodyException, DeleteException, DBException, DPException
+from aiohttp import web, BasicAuth
 import os
 from hw2 import mimeDict
 import time
 from db_utilis import UserType, UserDB
 from urllib import parse
 import aiofiles
-import base64
 import config
 import re
 
 
 async def check_auth(authorization):
     req_username = None
-    base64_message = str(authorization).split()[1]  # remove Basic
-    base64_bytes = base64_message.encode('utf-8')
-    message_bytes = base64.b64decode(base64_bytes)
-    username_password = message_bytes.decode('utf-8')
-    username_password_lst = username_password.split(':')
-    username = username_password_lst[0]
-    password = username_password_lst[1]
+    auth = BasicAuth.decode(authorization)
+    username = auth.login
+    password = auth.password
     if username == config.admin.get('username') and password == config.admin.get('password'):
         print('This is an admin')
         req_username = 'admin'
@@ -32,41 +27,96 @@ async def check_auth(authorization):
     return req_username, UserType.NOT_A_USER
 
 
-
 class HTTPHandler:
 
     def __init__(self, request):
         self.request = request
-        self.rel_url_str = str(request._rel_url)
+        self.rel_url_str = request.path
         self.auth = UserType.NOT_A_USER
         self.user_name = None
+        self.user_dict = {'authenticated': False, 'username': None}
 
     # check auth of the user
     async def auth_user(self):
         authorization = self.request.headers.get('Authorization')
         if authorization is not None and "Basic" in authorization:
             self.user_name, self.auth = await check_auth(authorization)
+            if self.auth != UserType.NOT_A_USER:
+                self.user_dict['authenticated'] = True
+                self.user_dict['username'] = self.user_name
+
+    # handle dynamic pages
+    def handle_dynamic_page(self, rend_content_bytes):
+        user = self.user_dict
+        params = self.request.query
+        context_variables = {'user': user, 'params': params}
+        rend_content = rend_content_bytes.decode('utf-8')
+        pat = '{%(.*?)%}'
+
+        while re.search(pat, rend_content, flags=re.DOTALL):
+            match = re.search(pat, rend_content, flags=re.DOTALL)
+            match_indexes = match.span()
+            sub_str = match.group(1).replace('\n', '')
+            try:
+                eval_sub_str = eval(sub_str, context_variables)
+            except DPException as e:
+                raise DPException('error while rendering')
+            rend_content = rend_content[:match_indexes[0]] + eval_sub_str + rend_content[match_indexes[1]:]
+        enc_rend_content = rend_content.encode('utf-8')
+        return web.Response(body=enc_rend_content, status=200, reason="OK",
+                            headers={"Date": make_http_time_string(time.localtime())
+                                , "Content-Length": str(len(enc_rend_content))
+                                , "Connection": "close"
+                                , "Content-Type": 'text/html'})
 
     # GET method handler
     async def get(self):
         exist, file_path = check_if_file_exist(self.rel_url_str)
-        content_type = get_content_type(self.rel_url_str)
+        if self.rel_url_str.endswith('.dp') and self.auth == UserType.NOT_A_USER:
+            # dp and not a user
+            return web.Response(status=401, reason="Unauthorized",
+                                headers={"Date": make_http_time_string(time.localtime())
+                                    , "WWW-Authenticate": "Basic realm=Users"
+                                    , "Connection": "close"})
         if exist:
-            async with aiofiles.open(file_path, mode='rb') as f:
-                content = await f.read()
-            # Read file contents
-            if content_type is not None:
-                return web.Response(body=content, status=200, reason="OK",
+            if not os.access(file_path, os.R_OK):  # no permission to read file
+                return web.Response(status=403, reason="Forbidden",
                                     headers={"Date": make_http_time_string(time.localtime())
-                                        , "Content-Length": str(len(content))
-                                        , "Connection": "close"
-                                        , "Content-Type": content_type})
-            else:  # only exist but content type is None
-                return web.Response(body=content, status=200, reason="OK",
-                                    headers={"Date": make_http_time_string(time.localtime())
-                                        , "Content-Length": str(len(content))
                                         , "Connection": "close"})
-        else:
+            try:
+                # Read file contents
+                async with aiofiles.open(file_path, mode='rb') as f:
+                    content = await f.read()
+            except Exception as e:
+                return web.Response(status=500, reason="Internal Server Error",
+                                    headers={"Date": make_http_time_string(time.localtime())
+                                        , "Connection": "close"})
+
+            if self.rel_url_str.endswith('.dp'):
+                try:
+                    return self.handle_dynamic_page(content)
+                except DPException as e:
+                    return web.Response(status=500, reason="Internal Server Error",
+                                        headers={"Date": make_http_time_string(time.localtime())
+                                            , "Connection": "close"})
+
+
+            else:
+                # regular get
+                content_type = get_content_type(self.rel_url_str)
+                if content_type is not None:
+                    return web.Response(body=content, status=200, reason="OK",
+                                        headers={"Date": make_http_time_string(time.localtime())
+                                            , "Content-Length": str(len(content))
+                                            , "Connection": "close"
+                                            , "Content-Type": content_type})
+                else:  # only exist but content type is None
+                    return web.Response(body=content, status=200, reason="OK",
+                                        headers={"Date": make_http_time_string(time.localtime())
+                                            , "Content-Length": str(len(content))
+                                            , "Connection": "close"
+                                            , "Content-Type": 'text/plain'})
+        else:  # not exist
             content = self.create_not_found_page()
             enc_content = content.encode('utf-8')
             return web.Response(body=enc_content, status=404, reason="Not Found",
@@ -80,6 +130,7 @@ class HTTPHandler:
         if self.auth != UserType.ADMIN:
             return web.Response(status=401, reason="Unauthorized",
                                 headers={"Date": make_http_time_string(time.localtime())
+                                    , "WWW-Authenticate": "Basic realm=admin"
                                     , "Connection": "close"})
 
         content_type = self.request.headers.get('Content-Type')
@@ -96,10 +147,9 @@ class HTTPHandler:
                 with UserDB() as u:
                     u.insert_user(new_user_name, new_password)
             except DBException as e:
-                    return web.Response(status=409, reason="Conflict",
-                                        headers={"Date": make_http_time_string(time.localtime())
-                                            , "WWW-Authenticate": "Basic realm=user"
-                                            , "Connection": "close"})
+                return web.Response(status=409, reason="Conflict",
+                                    headers={"Date": make_http_time_string(time.localtime())
+                                        , "Connection": "close"})
 
             return web.Response(status=200, reason="OK",
                                 headers={"Date": make_http_time_string(time.localtime())
@@ -114,6 +164,7 @@ class HTTPHandler:
         if self.auth != UserType.ADMIN:
             return web.Response(status=401, reason="Unauthorized",
                                 headers={"Date": make_http_time_string(time.localtime())
+                                    , "WWW-Authenticate": "Basic realm=admin"
                                     , "Connection": "close"})
         try:
             user_to_delete = self.parse_user_to_delete()
@@ -127,7 +178,6 @@ class HTTPHandler:
         except DBException as e:
             return web.Response(status=409, reason="Conflict",
                                 headers={"Date": make_http_time_string(time.localtime())
-                                    , "WWW-Authenticate": "Basic realm=user"
                                     , "Connection": "close"})
         return web.Response(status=200, reason="OK",
                             headers={"Date": make_http_time_string(time.localtime())
@@ -168,72 +218,11 @@ class HTTPHandler:
                     </html>"
         return not_found_page_html
 
-    def get(self):
-        exist, file_path = check_if_file_exist(self.rel_url_str)
-        content_type = get_content_type(self.rel_url_str)
-        if not exist or content_type is None:
-            content = self.create_not_found_page()
-            enc_content = content.encode('utf-8')
-            return web.Response(body=enc_content, status=404, reason="Not Found",
-                                headers={"Date": make_http_time_string(time.localtime())
-                                    , "Content-Length": str(len(enc_content))
-                                    , "Connection": "close"
-                                    , "Content-Type": "text/html"})
-            # Dynamic Pages
-            elif self.rel_url_str.endswith('.dp'):
-            with open(file_path, 'rb') as f:
-                content = f.read()
-                rend_content = content
-
-            user = {‘authenticated’: ??, ‘username’: ??}
-            params = ???
-            context_variables = {'user': user, 'params': params}}
-
-            pat = '{%(.*?)%}'
-            while re.search(pat, rend_content, flags=re.DOTALL):
-                match = re.search(pat, rend_content, flags=re.DOTALL)
-                match_indexes = match.regs[0]
-                sub_str = match.group(1).replace('\n', '')
-                try:
-                    eval_sub_str = eval(sub_str, context_variables)
-                except Exception as e:
-                    raise ???
-                    rend_content = rend_content[:match_indexes[0]] + eval_sub_str + rend_content[match_indexes[1]:]
-
-                return web.Response(body=content_rend, status=200, reason="OK",
-                                    headers={"Date": make_http_time_string(time.localtime())
-                                        , "Content-Length": str(len(content_rend))
-                                        , "Connection": "close"
-                                        , "Content-Type": content_type})
-
-            else:
-                with open(file_path, 'rb') as f:
-                    content = f.read()
-
-                # Read file contents
-                return web.Response(body=content, status=200, reason="OK",
-                                    headers={"Date": make_http_time_string(time.localtime())
-                                        , "Content-Length": str(len(content))
-                                        , "Connection": "close"
-                                        , "Content-Type": content_type})
-        else:
-            with open(file_path, 'rb') as f:
-                content = f.read()
-
-            # Read file contents
-            return web.Response(body=content, status=200, reason="OK",
-                                headers={"Date": make_http_time_string(time.localtime())
-                                    , "Content-Length": str(len(content))
-                                    , "Connection": "close"
-                                    , "Content-Type": content_type})
-
 
 # create time header
 def make_http_time_string(time_struct):
     '''Input struct_time and output HTTP header-type time string'''
-
     return time.strftime('%a, %d %b %Y %H:%M:%S GMT',
-
                          time_struct)
 
 
@@ -262,32 +251,21 @@ async def handler(request):
     http_handler = HTTPHandler(request)
     method = request.method
     # check authentication
-    if method == 'GET':
-        await http_handler.auth_user()
-        return await http_handler.get()
-    if method == 'POST':
-        await http_handler.auth_user()
-        return await http_handler.post()
-    if method == 'DELETE':
-        await http_handler.auth_user()
-        return await http_handler.delete()
-
-    text = '''
-            <!DOCTYPE html>
-        <html>
-            <head>
-                <title> Document Title </title>
-            </head>
-
-            <body> 
-                <h1> An header </h1>
-                <p> The paragraph goes here </p>
-                <ul>
-                    <li> First item in a list </li>
-                    <li> Another item </li>
-                </ul>
-            </body>
-        </html>
-    '''
-    return web.Response(body=text.encode('utf-8'), status=500,
-                        headers={"Content-Type": "text/html", "charset": "utf-8"})
+    try:
+        if method == 'GET':
+            await http_handler.auth_user()
+            return await http_handler.get()
+        elif method == 'POST':
+            await http_handler.auth_user()
+            return await http_handler.post()
+        elif method == 'DELETE':
+            await http_handler.auth_user()
+            return await http_handler.delete()
+        else:
+            return web.Response(status=501, reason="Not Implemented",
+                                headers={"Date": make_http_time_string(time.localtime())
+                                    , "Connection": "close"})
+    except Exception as e:
+        return web.Response(status=500, reason="Internal Server Error",
+                            headers={"Date": make_http_time_string(time.localtime())
+                                , "Connection": "close"})
