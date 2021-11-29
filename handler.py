@@ -3,7 +3,7 @@ from aiohttp import web
 import os
 from hw2 import mimeDict
 import time
-
+import re
 
 class HTTPHandler:
 
@@ -28,6 +28,7 @@ class HTTPHandler:
     def get(self):
         exist, file_path = check_if_file_exist(self.rel_url_str)
         content_type = get_content_type(self.rel_url_str)
+
         if not exist or content_type is None:
             content = self.create_not_found_page()
             enc_content = content.encode('utf-8')
@@ -36,6 +37,34 @@ class HTTPHandler:
                                     , "Content-Length": str(len(enc_content))
                                     , "Connection": "close"
                                     , "Content-Type": "text/html"})
+
+        # Dynamic Pages
+        elif self.rel_url_str.endswith('.dp'):
+            with open(file_path, 'rb') as f:
+                content = f.read()
+                rend_content = content
+
+            user = {‘authenticated’: ??, ‘username’: ??}
+            params = ???
+            context_variables = {'user': user, 'params': params}}
+
+            pat = '{%(.*?)%}'
+            while re.search(pat, rend_content, flags=re.DOTALL):
+                match = re.search(pat, rend_content, flags=re.DOTALL)
+                match_indexes = match.regs[0]
+                sub_str = match.group(1).replace('\n', '')
+                try:
+                    eval_sub_str = eval(sub_str, context_variables)
+                except Exception as e:
+                    raise ???
+                rend_content = rend_content[:match_indexes[0]] + eval_sub_str + rend_content[match_indexes[1]:]
+
+            return web.Response(body=content_rend, status=200, reason="OK",
+                                headers={"Date": make_http_time_string(time.localtime())
+                                    , "Content-Length": str(len(content_rend))
+                                    , "Connection": "close"
+                                    , "Content-Type": content_type})
+
         else:
             with open(file_path, 'rb') as f:
                 content = f.read()
