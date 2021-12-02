@@ -5,8 +5,9 @@ from exception_types import DBException
 
 class UserType:
     NOT_A_USER = 0
-    USER = 1
-    ADMIN = 2
+    AUTHENTICATED_USER = 1
+    NOT_AUTHENTICATED_USER = 2
+    ADMIN = 3
 
 
 class UserDB:
@@ -39,6 +40,8 @@ class UserDB:
             self.cur.execute("INSERT INTO Users(username, password) VALUES (?, ?)", (username, password))
         except sqlite3.IntegrityError as e:
             raise DBException
+        except Exception as e:
+            print(e)
         print("User was inserted")
 
     # delete user from Users db
@@ -50,3 +53,27 @@ class UserDB:
             raise DBException
         print(count_rows, "users was deleted")
         return count_rows
+
+    # select password from specific user
+    def select(self, username):
+        try:
+            self.cur.execute("SELECT password FROM USERS WHERE username=?", (username,))
+            password = self.cur.fetchone()
+            if password:
+                return True, password[0]
+            else:
+                return False, None
+        except sqlite3.IntegrityError as e:
+            raise DBException
+
+    # select password from specific user
+    def selectForTest(self, username):
+        try:
+            self.cur.execute("SELECT password FROM USERS WHERE username=?", (username,))
+            password = self.cur.fetchone()
+            if password:
+                return True
+            else:
+                return False
+        except sqlite3.IntegrityError as e:
+            raise DBException

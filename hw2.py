@@ -1,19 +1,7 @@
 import asyncio
 from aiohttp import web
 import config
-import os
-import json
 import handler
-
-
-def load_json_mime():
-    current_dir = os.getcwd()
-    json_path = os.path.join(current_dir, 'mime.json')
-    with open(json_path) as json_file:
-        dict = json.load(json_file)
-    return dict
-
-mimeDict = load_json_mime()
 
 
 async def main():
