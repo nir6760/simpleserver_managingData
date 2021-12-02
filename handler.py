@@ -154,7 +154,8 @@ class HTTPHandler:
                                     , "Connection": "close"})
 
         content_type = self.request.headers.get('Content-Type')
-        if (self.rel_url_str == '/users' or self.rel_url_str == '/users/') and content_type is not None and \
+        add_to = self.rel_url_str.strip('/').split('/')
+        if len(add_to) == 1 and add_to[0] == 'users' and content_type is not None and \
                 content_type == 'application/x-www-form-urlencoded' and self.request.body_exists \
                 and self.request.can_read_body:
             try:
