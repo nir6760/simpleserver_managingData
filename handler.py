@@ -1,5 +1,4 @@
 import json
-
 from exception_types import PostBodyException, DeleteException, DBException, DPException
 from aiohttp import web, BasicAuth
 import os
@@ -10,6 +9,17 @@ from urllib import parse
 import aiofiles
 import config
 import re
+
+
+class StatusType:
+    OK200 = (200, 'OK')
+    BAD_REQ400 = (400, 'Bad request')
+    UNAUTHORIZED401 = (401, 'Unauthorized')
+    FORBIDDEN403 = (403, 'Forbidden')
+    NOTFOUND404 = (404, 'Not Found')
+    CONFLICT409 = (409, 'Conflict')
+    INTERNAL500 = (500, 'Internal Server Error')
+    NOT_IMP501 = (501, 'Not Implemented')
 
 
 async def check_auth(authorization):
@@ -86,40 +96,56 @@ class HTTPHandler:
                                 , "Connection": "close"
                                 , "Content-Type": 'text/html'})
 
+    # the default web response
+    @staticmethod
+    def default_web_response(status_type):
+        enc_content = HTTPHandler.create_status_html_page(status_type)
+        return web.Response(body=enc_content, status=status_type[0],
+                            reason=status_type[1],
+                            headers={"Date": make_http_time_string(time.localtime())
+                                , "Content-Length": str(len(enc_content))
+                                , "charset": "utf-8"
+                                , "Connection": "close"
+                                , "Content-Type": 'text/html'})
+
+    # unauthorized response
+    @staticmethod
+    def unauthorized_web_response(realam):
+        enc_content = HTTPHandler.create_status_html_page(StatusType.UNAUTHORIZED401)
+        return web.Response(body=enc_content, status=StatusType.UNAUTHORIZED401[0],
+                            reason=StatusType.UNAUTHORIZED401[1],
+                            headers={"Date": make_http_time_string(time.localtime())
+                                , "Content-Length": str(len(enc_content))
+                                , "WWW-Authenticate": f"Basic realm={realam}"
+                                , "charset": "utf-8"
+                                , "Connection": "close"
+                                , "Content-Type": 'text/html'})
+
     # GET method handler
     async def get(self):
         exist, file_path = check_if_file_exist(self.rel_url_str)
         if self.rel_url_str.endswith('.dp') and self.auth == UserType.NOT_A_USER:
             # dp and not a user
-            return web.Response(status=401, reason="Unauthorized",
-                                headers={"Date": make_http_time_string(time.localtime())
-                                    , "WWW-Authenticate": "Basic realm=Users"
-                                    , "Connection": "close"})
+            return self.unauthorized_web_response('Users')
         if exist:
             if not os.access(file_path, os.R_OK) or \
                     self.rel_url_str == '/config.py' or self.rel_url_str == '/users.db':  # no permission to read file
-                return web.Response(status=403, reason="Forbidden",
-                                    headers={"Date": make_http_time_string(time.localtime())
-                                        , "Connection": "close"})
+                return self.default_web_response(StatusType.FORBIDDEN403)
             try:
                 # Read file contents
                 async with aiofiles.open(file_path, mode='rb') as f:
                     content = await f.read()
             except Exception as e:
-                return web.Response(status=500, reason="Internal Server Error",
-                                    headers={"Date": make_http_time_string(time.localtime())
-                                        , "Connection": "close"})
+                return self.default_web_response(StatusType.INTERNAL500)
 
             if self.rel_url_str.endswith('.dp'):
                 try:
                     return self.handle_dynamic_page(content)
                 except DPException as e:
-                    return web.Response(status=500, reason="Internal Server Error",
-                                        headers={"Date": make_http_time_string(time.localtime())
-                                            , "Connection": "close"})
+                    return self.default_web_response(StatusType.INTERNAL500)
                 except Exception as e:
                     print(e)
-
+                    return self.default_web_response(StatusType.INTERNAL500)
 
             else:
                 # regular get
@@ -135,23 +161,21 @@ class HTTPHandler:
                                         headers={"Date": make_http_time_string(time.localtime())
                                             , "Content-Length": str(len(content))
                                             , "Connection": "close"
-                                            , "Content-Type": 'text/plain'})
+                                            , "Content-Type": 'text/plain'})  # default is text/plain
         else:  # not exist
             content = self.create_not_found_page()
             enc_content = content.encode('utf-8')
             return web.Response(body=enc_content, status=404, reason="Not Found",
                                 headers={"Date": make_http_time_string(time.localtime())
                                     , "Content-Length": str(len(enc_content))
+                                    , "charset": "utf-8"
                                     , "Connection": "close"
                                     , "Content-Type": "text/html"})
 
     # POST method handler
     async def post(self):
         if self.auth != UserType.ADMIN:
-            return web.Response(status=401, reason="Unauthorized",
-                                headers={"Date": make_http_time_string(time.localtime())
-                                    , "WWW-Authenticate": "Basic realm=admin"
-                                    , "Connection": "close"})
+            return self.unauthorized_web_response('Admin')
 
         content_type = self.request.headers.get('Content-Type')
         add_to = self.rel_url_str.strip('/').split('/')
@@ -161,52 +185,44 @@ class HTTPHandler:
             try:
                 new_user_name, new_password = await self.read_post_content()
                 if new_user_name == config.admin['username']:
-                    return web.Response(status=409, reason="Conflict",
-                                        headers={"Date": make_http_time_string(time.localtime())
-                                            , "Connection": "close"})
+                    return self.default_web_response(StatusType.CONFLICT409)
             except PostBodyException as e:
-                return web.Response(status=400, reason="BadRequest",
-                                    headers={"Date": make_http_time_string(time.localtime())
-                                        , "Connection": "close"})
+                return self.default_web_response(StatusType.BAD_REQ400)
             try:
                 with UserDB() as u:
                     u.insert_user(new_user_name, new_password)
             except DBException as e:
-                return web.Response(status=409, reason="Conflict",
-                                    headers={"Date": make_http_time_string(time.localtime())
-                                        , "Connection": "close"})
-
-            return web.Response(status=200, reason="OK",
+                return self.default_web_response(StatusType.CONFLICT409)
+            enc_content = self.create_status_html_page(StatusType.OK200)
+            return web.Response(body=enc_content, status=200, reason="OK",
                                 headers={"Date": make_http_time_string(time.localtime())
-                                    , "Connection": "close"})
+                                    , "Content-Length": str(len(enc_content))
+                                    , "charset": "utf-8"
+                                    , "Connection": "close"
+                                    , "Content-Type": "text/html"})
         else:
-            return web.Response(status=400, reason="BadRequest",
-                                headers={"Date": make_http_time_string(time.localtime())
-                                    , "Connection": "close"})
+            return self.default_web_response(StatusType.BAD_REQ400)
 
     # delet method handler
     async def delete(self):
         if self.auth != UserType.ADMIN:
-            return web.Response(status=401, reason="Unauthorized",
-                                headers={"Date": make_http_time_string(time.localtime())
-                                    , "WWW-Authenticate": "Basic realm=admin"
-                                    , "Connection": "close"})
+            return self.unauthorized_web_response('Admin')
         try:
             user_to_delete = self.parse_user_to_delete()
         except DeleteException as e:
-            return web.Response(status=400, reason="BadRequest",
-                                headers={"Date": make_http_time_string(time.localtime())
-                                    , "Connection": "close"})
+            return self.default_web_response(StatusType.BAD_REQ400)
         try:
             with UserDB() as u:
                 count_rows = u.delete_user(user_to_delete)
         except DBException as e:
-            return web.Response(status=409, reason="Conflict",
-                                headers={"Date": make_http_time_string(time.localtime())
-                                    , "Connection": "close"})
-        return web.Response(status=200, reason="OK",
+            return self.default_web_response(StatusType.CONFLICT409)
+        enc_content = self.create_status_html_page(StatusType.OK200)
+        return web.Response(body=enc_content, status=200, reason="OK",
                             headers={"Date": make_http_time_string(time.localtime())
-                                , "Connection": "close"})
+                                , "Content-Length": str(len(enc_content))
+                                , "charset": "utf-8"
+                                , "Connection": "close"
+                                , "Content-Type": "text/html"})
 
     # parse the username from delete request
     def parse_user_to_delete(self):
@@ -226,13 +242,15 @@ class HTTPHandler:
             username, password = username_password['username'], username_password['password']
             if len(username) > 1 or len(password) > 1:
                 raise PostBodyException("username and or password not valid")
-        except:
+        except Exception as e:
             raise PostBodyException("Post content invalid")
         # check if username is the user
         return username[0], password[0]
 
     # create not-found page
     def create_not_found_page(self):
+        not_found_page_html = f"HTTP/1.1 404 ERROR\n\n"
+        not_found_page_html += f"<!DOCTYPE html>\n"
         not_found_page_html = "<html>\n\
                     <head>\n\
                         <title>404 Not Found</title>\n\
@@ -244,6 +262,22 @@ class HTTPHandler:
                     </body>\n\
                     </html>"
         return not_found_page_html
+
+    # create error html page
+    @staticmethod
+    def create_status_html_page(st):
+        not_found_page_html = f"HTTP/1.1 {st[0]} ERROR\n\n"
+        not_found_page_html += f"<!DOCTYPE html>\n"
+        not_found_page_html += f"<html>\n\
+                    <head>\n\
+                        <title>{st[0]} - {st[1]}</title>\n\
+                    </head>\n\
+                    <body>\n\
+                    <h1>{st[0]} - {st[1]}</h1>\n\
+                    <hr/>\n\
+                    </body>\n\
+                    </html>"
+        return not_found_page_html.encode('utf-8')
 
 
 # create time header
@@ -310,7 +344,6 @@ async def handler(request):
     # check authentication
     try:
         if method == 'GET':
-
             await http_handler.auth_user()
             return await http_handler.get()
         elif method == 'POST':
@@ -320,10 +353,6 @@ async def handler(request):
             await http_handler.auth_user()
             return await http_handler.delete()
         else:
-            return web.Response(status=501, reason="Not Implemented",
-                                headers={"Date": make_http_time_string(time.localtime())
-                                    , "Connection": "close"})
+            return HTTPHandler.default_web_response(StatusType.NOT_IMP501)
     except Exception as e:
-        return web.Response(status=500, reason="Internal Server Error",
-                            headers={"Date": make_http_time_string(time.localtime())
-                                , "Connection": "close"})
+        return HTTPHandler.default_web_response(StatusType.INTERNAL500)
